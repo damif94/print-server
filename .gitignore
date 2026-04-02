@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Runtime / temp files
+tmp/
+temp/
+*.tmp
+
+# Local secrets / overrides
+.env
+.env.*
+config.local.py
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Systemd / local service notes
+*.service.bak
+
+# Uploaded / generated files if you add them later
+uploads/
+print-jobs/
