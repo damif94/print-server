@@ -171,15 +171,15 @@ Use this content:
 
 ```ini
 [Unit]
-Description=Print API
+Description=Print Server
 After=network.target cups.service
 Wants=network.target
 
 [Service]
 Type=simple
 User=agustin
-WorkingDirectory=/home/agustin/print-api
-ExecStart=/home/agustin/print-api/.venv/bin/python /home/agustin/print-api/server.py
+WorkingDirectory=/home/agustin/print-server
+ExecStart=/home/agustin/print-server/.venv/bin/python /home/agustin/print-server/server.py
 Restart=always
 RestartSec=3
 
