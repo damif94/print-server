@@ -8,7 +8,7 @@ import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
-from config import API_KEY, INDEX_FILE, PRINTER_NAME
+from config import API_KEY, INDEX_FILE, LABEL_HEIGHT_PX, LABEL_MEDIA, LABEL_WIDTH_PX, PRINTER_NAME
 from logging_utils import build_request_body_log, log_request_response
 
 
@@ -49,6 +49,32 @@ class PrintHandler(BaseHTTPRequestHandler):
             200,
             f"served_file:{os.path.basename(path)}",
             extra={"served_file": path},
+        )
+
+    def _resize_image_for_label(self, input_path: str, output_path: str):
+        """Resize PNG/JPEG to fit within label bounds (LABEL_WIDTH_PX x LABEL_HEIGHT_PX), maintaining aspect ratio."""
+        info = subprocess.run(
+            ["sips", "-g", "pixelWidth", "-g", "pixelHeight", input_path],
+            capture_output=True, text=True, check=False,
+        )
+        width, height = None, None
+        for line in info.stdout.splitlines():
+            if "pixelWidth" in line:
+                width = int(line.split()[-1])
+            elif "pixelHeight" in line:
+                height = int(line.split()[-1])
+
+        if width is None or height is None:
+            raise ValueError(f"Could not read image dimensions: {info.stderr}")
+
+        if width / height > LABEL_WIDTH_PX / LABEL_HEIGHT_PX:
+            sips_arg = ["--resampleWidth", str(LABEL_WIDTH_PX)]
+        else:
+            sips_arg = ["--resampleHeight", str(LABEL_HEIGHT_PX)]
+
+        subprocess.run(
+            ["sips"] + sips_arg + [input_path, "--out", output_path],
+            capture_output=True, text=True, check=True,
         )
 
     def _is_authorized(self):
@@ -159,13 +185,19 @@ class PrintHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            print_path = upload_path
+            if matched_type in ("image/png", "image/jpeg"):
+                resized_path = os.path.join(temp_dir, f"resized{matched_ext}")
+                self._resize_image_for_label(upload_path, resized_path)
+                print_path = resized_path
+
             cmd = [
                 "lp",
                 "-d",
                 PRINTER_NAME,
                 "-o",
-                "PageSize=w4h6",
-                upload_path,
+                f"media={LABEL_MEDIA}",
+                print_path,
             ]
 
             result = subprocess.run(cmd, capture_output=True, text=True, check=False)
