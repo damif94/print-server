@@ -8,6 +8,8 @@ import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
+from PIL import Image
+
 from config import API_KEY, INDEX_FILE, LABEL_HEIGHT_PX, LABEL_MEDIA, LABEL_WIDTH_PX, PRINTER_DPI, PRINTER_NAME
 from logging_utils import build_request_body_log, log_request_response
 
@@ -52,30 +54,10 @@ class PrintHandler(BaseHTTPRequestHandler):
         )
 
     def _resize_image_for_label(self, input_path: str, output_path: str):
-        """Resize PNG/JPEG to fit within label bounds (LABEL_WIDTH_PX x LABEL_HEIGHT_PX), maintaining aspect ratio."""
-        info = subprocess.run(
-            ["sips", "-g", "pixelWidth", "-g", "pixelHeight", input_path],
-            capture_output=True, text=True, check=False,
-        )
-        width, height = None, None
-        for line in info.stdout.splitlines():
-            if "pixelWidth" in line:
-                width = int(line.split()[-1])
-            elif "pixelHeight" in line:
-                height = int(line.split()[-1])
-
-        if width is None or height is None:
-            raise ValueError(f"Could not read image dimensions: {info.stderr}")
-
-        if width / height > LABEL_WIDTH_PX / LABEL_HEIGHT_PX:
-            sips_arg = ["--resampleWidth", str(LABEL_WIDTH_PX)]
-        else:
-            sips_arg = ["--resampleHeight", str(LABEL_HEIGHT_PX)]
-
-        subprocess.run(
-            ["sips"] + sips_arg + [input_path, "--out", output_path],
-            capture_output=True, text=True, check=True,
-        )
+        with Image.open(input_path) as img:
+            img = img.rotate(180, expand=True)
+            img.thumbnail((LABEL_WIDTH_PX, LABEL_HEIGHT_PX), Image.LANCZOS)
+            img.save(output_path)
 
     def _is_authorized(self):
         provided_key = self.headers.get("X-API-Key", "")
@@ -189,7 +171,6 @@ class PrintHandler(BaseHTTPRequestHandler):
             if matched_type in ("image/png", "image/jpeg"):
                 resized_path = os.path.join(temp_dir, f"resized{matched_ext}")
                 self._resize_image_for_label(upload_path, resized_path)
-                subprocess.run(["sips", "-r", "180", resized_path], capture_output=True, text=True, check=True)
                 print_path = resized_path
 
             cmd = [
