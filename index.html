@@ -11,660 +11,245 @@
 <body style="margin:0">
   <div id="root"></div>
   <script type="text/babel">
-    const { useState, useEffect, useCallback, useRef } = React;
+    const { useState } = React;
 
+    const TYPE_LABELS = {
+      mercadolibre: "Mercado Libre",
+      mlmelinet:    "ML Melinet",
+      gestionpost:  "GestionPost",
+      shopify:      "Shopify",
+    };
 
-// Xprinter DPI nativo = 203dpi → 80mm=638px, 100mm=799px
-const PRINTER_DPI = 203;
-const W = Math.round(80 / 25.4 * PRINTER_DPI);   // 638
-const H = Math.round(100 / 25.4 * PRINTER_DPI);  // 799
-const PAD = Math.round(70 / 945 * W);             // 47
+    function App() {
+      const [tab,      setTab]      = useState("pdf");
+      const [apiBase,  setApiBase]  = useState("");
+      const [apiKey,   setApiKey]   = useState("");
+      const [preview,  setPreview]  = useState(null);   // {url, blob, labelType}
+      const [busy,     setBusy]     = useState(false);
+      const [error,    setError]    = useState(null);
+      const [printMsg, setPrintMsg] = useState(null);   // {ok, msg}
+      const [drag,     setDrag]     = useState(false);
+      const [form,     setForm]     = useState({name:"", address:"", city:"", country:"Uruguay", phone:"", notes:""});
 
-// ── Configuraciones de recorte PDF ───────────────────────────────────────────
-const PDF_TYPES = {
-  mercadolibre: { label:"Mercado Libre", short:"ML",  page:0, cx:0, cy:0, cw:36, ch:79, accent:"#FFE600", dot:"#111" },
-  mlmelinet:    { label:"ML Melinet",    short:"UES", page:0, cx:0, cy:0, cw:35, ch:78, accent:"#00AEEF", dot:"#fff" },
-  gestionpost:  { label:"GestionPost",   short:"GP",  page:0, cx:0, cy:0, cw:48, ch:51, accent:"#FF6B2B", dot:"#fff" },
-};
+      const url  = path => `${apiBase}${path}`;
+      const auth = ()   => ({ "X-API-Key": apiKey.trim() });
 
-// ── DETECCIÓN AUTOMÁTICA ─────────────────────────────────────────────────────
-const KEYWORDS = {
-  gestionpost:  ["gestionpost", "entregamos felicidad", "ursec:", "gestionpost.com.uy"],
-  shopify:      ["facturar a", "pedido #", "packing slip", "kai deco"],
-  mlmelinet:    ["melinet", "ues sa", "ues111", "xmv01", "uesm"],
-  mercadolibre: ["mercado libre", "envio:", "venta:", "zona ", "flex"],
-};
+      const clearPreview = () => { setPreview(null); setError(null); setPrintMsg(null); };
+      const switchTab    = t  => { setTab(t); clearPreview(); };
 
-const detectByName = name => {
-  const n = name.toLowerCase();
-  if (n.includes("packing_slip") || n.includes("shopify")) return "shopify";
-  if (n.includes("gestion")) return "gestionpost";
-  return null;
-};
+      const handlePdf = async (file) => {
+        if (!file || !file.name.toLowerCase().endsWith(".pdf")) return;
+        clearPreview();
+        setBusy(true);
+        try {
+          const res = await fetch(url("/convert"), {
+            method: "POST",
+            headers: { ...auth(), "Content-Type": "application/pdf", "X-Filename": file.name },
+            body: file,
+          });
+          if (!res.ok) {
+            const j = await res.json().catch(() => ({}));
+            setError(j.error || `Error ${res.status}`);
+            return;
+          }
+          const labelType = res.headers.get("X-Label-Type") || "";
+          const blob = await res.blob();
+          setPreview({ url: URL.createObjectURL(blob), blob, labelType });
+        } catch(e) {
+          setError(e.message);
+        } finally {
+          setBusy(false);
+        }
+      };
 
-const detectByContent = async (pdf) => {
-  try {
-    const page = await pdf.getPage(1);
-    const tc   = await page.getTextContent();
-    const text = tc.items.map(i => i.str).join(" ").toLowerCase();
-    for (const [tipo, palabras] of Object.entries(KEYWORDS)) {
-      if (palabras.some(p => text.includes(p))) return tipo;
-    }
-  } catch(e) {}
-  return "mercadolibre";
-};
+      const handleGenerate = async () => {
+        if (!form.name.trim()) return;
+        clearPreview();
+        setBusy(true);
+        try {
+          const res = await fetch(url("/label"), {
+            method: "POST",
+            headers: { ...auth(), "Content-Type": "application/json" },
+            body: JSON.stringify(form),
+          });
+          if (!res.ok) {
+            const j = await res.json().catch(() => ({}));
+            setError(j.error || `Error ${res.status}`);
+            return;
+          }
+          const blob = await res.blob();
+          setPreview({ url: URL.createObjectURL(blob), blob, labelType: "" });
+        } catch(e) {
+          setError(e.message);
+        } finally {
+          setBusy(false);
+        }
+      };
 
-// ── Dibuja etiqueta limpia (Shopify + Manual) ────────────────────────────────
-const drawCleanLabel = (data) => {
-  const name     = data.name     || "";
-  const phone    = data.phone    || "";
-  const notes    = data.notes    || "";
-  const streetTxt = data.street
-    || (Array.isArray(data.address) ? data.address.join(" ") : (data.address || ""));
-  const cityTxt = data.cityLine
-    || [data.city, data.country].filter(Boolean).join(", ")
-    || "";
+      const handlePrint = async () => {
+        if (!preview || busy) return;
+        setBusy(true);
+        setPrintMsg(null);
+        try {
+          const res = await fetch(url("/print"), {
+            method: "POST",
+            headers: { ...auth(), "Content-Type": "image/png" },
+            body: preview.blob,
+          });
+          const j = await res.json();
+          setPrintMsg({ ok: res.ok, msg: res.ok ? "✅ Enviado a imprimir" : "❌ " + (j.error || res.status) });
+        } catch(e) {
+          setPrintMsg({ ok: false, msg: "❌ " + e.message });
+        } finally {
+          setBusy(false);
+        }
+      };
 
-  const canvas = document.createElement("canvas");
-  canvas.width = W; canvas.height = H;
-  const ctx = canvas.getContext("2d");
+      const S = {
+        root:  { minHeight:"100vh", background:"#f0f0ee", fontFamily:"'Helvetica Neue',Arial,sans-serif", padding:"20px 14px" },
+        wrap:  { maxWidth:680, margin:"0 auto" },
+        card:  { background:"#fff", borderRadius:14, padding:22, boxShadow:"0 2px 16px rgba(0,0,0,.07)", marginBottom:12 },
+        label: { fontSize:11, fontWeight:700, color:"#888", letterSpacing:1, textTransform:"uppercase", display:"block", marginBottom:5 },
+        input: { width:"100%", padding:"11px 14px", border:"1px solid #e0e0e0", borderRadius:8, fontSize:15, outline:"none", fontFamily:"inherit", background:"#fafafa" },
+        tab:   a => ({ padding:"10px 20px", borderRadius:8, border:"none", cursor:"pointer", fontWeight:700, fontSize:14, background:a?"#111":"#e8e8e8", color:a?"#fff":"#555", transition:"all .15s" }),
+        btn:   on => ({ padding:"11px 22px", borderRadius:8, border:"none", cursor:on?"pointer":"not-allowed", background:on?"#111":"#ddd", color:on?"#fff":"#aaa", fontWeight:700, fontSize:14, transition:"all .15s" }),
+      };
 
-  ctx.fillStyle = "#fff"; ctx.fillRect(0,0,W,H);
-  ctx.strokeStyle = "#ddd"; ctx.lineWidth = 2;
-  ctx.strokeRect(6,6,W-12,H-12);
+      const Spinner = () => (
+        <div style={{width:22,height:22,border:"3px solid #ddd",borderTopColor:"#333",borderRadius:"50%",animation:"spin .7s linear infinite"}}/>
+      );
 
-  const HEADER_H = Math.round(H * 0.18);
-  ctx.fillStyle = "#000"; ctx.fillRect(0,0,W,HEADER_H);
-  ctx.fillStyle = "#fff";
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.font = "bold " + Math.round(HEADER_H * 0.55) + "px Arial";
-  ctx.fillText("KAI DECO", W/2, HEADER_H/2);
-  ctx.textAlign = "left"; ctx.textBaseline = "top";
-
-  const phoneSz    = Math.round(H * 0.075);
-  const phoneH     = Math.round(phoneSz * 1.35);
-  const bottomPad  = Math.round(H * 0.035);
-  const phoneZoneH = phoneH + Math.round(H * 0.055);
-  const phoneY     = H - bottomPad - phoneH;
-
-  const contentTop = HEADER_H + Math.round(H * 0.04);
-  const contentBot = H - phoneZoneH;
-  const available  = contentBot - contentTop;
-  const maxW       = W - PAD * 2;
-
-  function countLines(txt, font) {
-    if (!txt || !txt.trim()) return 0;
-    ctx.font = font;
-    const words = txt.split(" "); let cur = ""; let count = 1;
-    for (const w of words) {
-      const t = cur ? cur + " " + w : w;
-      if (ctx.measureText(t).width > maxW) { count++; cur = w; }
-      else cur = t;
-    }
-    return count;
-  }
-
-  let nameSz = Math.round(H * 0.082);
-  let addrSz = Math.round(H * 0.064);
-  const sepH = Math.round(H * 0.018) + Math.round(H * 0.015);
-  const notesSz = Math.round(H * 0.055);
-
-  function calcTotalH(nSz, aSz) {
-    const nameLines = countLines(name,     "bold " + nSz + "px Arial");
-    const strLines  = countLines(streetTxt, aSz + "px Arial");
-    const cityLines = countLines(cityTxt,   aSz + "px Arial");
-    const noteLines = notes.trim() ? countLines(notes, notesSz + "px Arial") + 1 : 0;
-    return (nameLines * nSz * 1.35) + Math.round(H * 0.01)
-         + sepH
-         + (strLines  * aSz  * 1.35) + Math.round(H * 0.006)
-         + (cityLines * aSz  * 1.35)
-         + (noteLines * notesSz * 1.35) + (notes.trim() ? Math.round(H*0.03) : 0);
-  }
-
-  let scale = 1.0;
-  while (calcTotalH(nameSz * scale, addrSz * scale) > available && scale > 0.6) {
-    scale -= 0.05;
-  }
-  nameSz = Math.round(nameSz * scale);
-  addrSz = Math.round(addrSz * scale);
-
-  let y = contentTop;
-
-  function writeLine(txt, fontSize, bold, color) {
-    if (!txt || !txt.trim()) return;
-    const font = (bold ? "bold " : "") + fontSize + "px Arial";
-    ctx.font = font; ctx.fillStyle = color;
-    const words = txt.split(" "); const wrapped = []; let cur = "";
-    for (const w of words) {
-      const t = cur ? cur + " " + w : w;
-      if (ctx.measureText(t).width > maxW) { if (cur) wrapped.push(cur); cur = w; }
-      else cur = t;
-    }
-    if (cur) wrapped.push(cur);
-    for (const line of wrapped) { ctx.fillText(line, PAD, y); y += fontSize * 1.35; }
-  }
-
-  function drawSep(color, margin) {
-    ctx.strokeStyle = color; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(PAD,y); ctx.lineTo(W-PAD,y); ctx.stroke();
-    y += margin;
-  }
-
-  writeLine(name, nameSz, true, "#000");
-  y += Math.round(H * 0.01);
-  drawSep("#e0e0e0", Math.round(H * 0.018));
-
-  writeLine(streetTxt, addrSz, false, "#222");
-  y += Math.round(H * 0.006);
-
-  writeLine(cityTxt, addrSz, false, "#222");
-
-  if (notes && notes.trim()) {
-    y += Math.round(H * 0.02);
-    drawSep("#f0f0f0", Math.round(H * 0.012));
-    writeLine("📌  " + notes, notesSz, false, "#555");
-  }
-
-  if (phone && phone.trim()) {
-    ctx.strokeStyle = "#000"; ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(PAD, phoneY - Math.round(H * 0.022));
-    ctx.lineTo(W - PAD, phoneY - Math.round(H * 0.022));
-    ctx.stroke();
-    ctx.fillStyle = "#000";
-    ctx.font = "bold " + phoneSz + "px Arial";
-    ctx.textBaseline = "top";
-    ctx.fillText("Tel: " + phone, PAD, phoneY);
-  }
-
-  return canvas.toDataURL("image/png", 1.0);
-};
-
-// ── Extraer datos de Shopify ──────────────────────────────────────────────────
-const extractShopify = (items, pageW, pageH) => {
-  const TOL = pageH * 0.009;
-  const lineMap = [];
-  for (const item of items) {
-    if (!item.str.trim()) continue;
-    const x = item.transform[4], y = item.transform[5];
-    const found = lineMap.find(l => Math.abs(l.y - y) < TOL);
-    if (found) found.items.push({ str: item.str.trim(), x });
-    else lineMap.push({ y, items: [{ str: item.str.trim(), x }] });
-  }
-  lineMap.sort((a, b) => b.y - a.y);
-  const lines = lineMap.map(l => ({
-    y: l.y,
-    text: l.items.sort((a, b) => a.x - b.x).map(i => i.str).join(" ").trim(),
-    items: l.items.sort((a, b) => a.x - b.x),
-    minX: Math.min(...l.items.map(i => i.x)),
-    maxX: Math.max(...l.items.map(i => i.x)),
-  }));
-
-  const headerIdx = lines.findIndex(l => l.text.toLowerCase().includes("enviar a"));
-  if (headerIdx === -1) return null;
-  const headerLine = lines[headerIdx];
-
-  const facturarItem = headerLine.items.find(i => i.str.toLowerCase().includes("facturar"));
-  const colDivX = facturarItem ? facturarItem.x : pageW * 0.45;
-
-  const STOP = ["artículos", "articulos", "notas", "gracias", "cantidad"];
-  const addr = [];
-  for (let i = headerIdx + 1; i < lines.length; i++) {
-    const line = lines[i];
-    const text = line.text;
-    if (STOP.some(w => text.toLowerCase().startsWith(w))) break;
-    const leftItems = line.items.filter(item => item.x < colDivX);
-    if (!leftItems.length) continue;
-    const leftText = leftItems.map(i => i.str).join(" ").trim();
-    if (leftText) addr.push(leftText);
-  }
-
-  if (!addr.length) return null;
-
-  const name = addr[0] || "";
-
-  const isUY = l => {
-    const cc = l.replace(/[\s\-(). ]/g, "");
-    return /^(\+?598)?0?9\d{7,8}$/.test(cc)
-        || /^(\+?598)?2\d{7}$/.test(cc)
-        || /^(\+?598)?[34]\d{7}$/.test(cc);
-  };
-  const phone   = addr.find(isUY) || "";
-  const country = addr.find(l => /^(uruguay|argentina|brasil|chile|paraguay|peru|mexico)/i.test(l)) || "";
-  const rest    = addr.filter(l => l !== name && l !== phone && l !== country);
-
-  let cityLine = "", streetLines = [];
-  const cityIdx = rest.findIndex(l =>
-    /UY-/i.test(l) ||
-    /\b(montevideo|canelones|maldonado|salto|paysandú|paysan|rivera|colonia|florida|treinta|rocha|artigas|durazno|flores|lavalleja|soriano|tacuarembó|cerro largo)\b/i.test(l)
-  );
-  if (cityIdx !== -1) {
-    cityLine   = rest[cityIdx];
-    streetLines = rest.filter((_, i) => i !== cityIdx);
-  } else {
-    streetLines = rest.slice(0, rest.length - 1);
-    cityLine    = rest[rest.length - 1] || "";
-  }
-
-  const DEPTOS = {
-    AR:'Artigas',    CA:'Canelones',     CL:'Cerro Largo',    CO:'Colonia',
-    DU:'Durazno',    FS:'Flores',        FD:'Florida',        LA:'Lavalleja',
-    MA:'Maldonado',  MO:'Montevideo',    PA:'Paysandú',       RN:'Río Negro',
-    RV:'Rivera',     RO:'Rocha',         SA:'Salto',          SJ:'San José',
-    SO:'Soriano',    TA:'Tacuarembó',    TT:'Treinta y Tres'
-  };
-  const cleanCity = cityLine
-    .replace(/\bUY-([A-Z]+)\b/gi, (_, code) => DEPTOS[code.toUpperCase()] || '')
-    .replace(/\b\d{5}\b/g, '')
-    .replace(/\s+/g, ' ').trim()
-    .replace(/^,|,$/g, '').trim();
-
-  const street     = streetLines.join(" ") || "";
-  const extraNotes = "";
-
-  const ol    = lines.find(l => /pedido\s*#/i.test(l.text));
-  const order = ol ? ol.text.match(/pedido\s*#\s*(\d+)/i)?.[1] : null;
-
-  return { name, street, cityLine: cleanCity, phone, order, notes: extraNotes };
-};
-
-// ── Convierte data URL a Blob ─────────────────────────────────────────────────
-const dataURLtoBlob = (dataUrl) => {
-  const [header, data] = dataUrl.split(',');
-  const mime = header.match(/:(.*?);/)[1];
-  const bytes = atob(data);
-  const arr = new Uint8Array(bytes.length);
-  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
-  return new Blob([arr], { type: mime });
-};
-
-// ════════════════════════════════════════════════════════════════════════════
-function App() {
-  const [tab,setTab]               = useState("pdf");
-  const [ready,setReady]           = useState(false);
-  const [detecting,setDetecting]   = useState(false);
-  const [file,setFile]             = useState(null);
-  const [drag,setDrag]             = useState(false);
-  const [pdfType,setPdfType]       = useState("mercadolibre");
-  const [detectedAs,setDetectedAs] = useState("");
-  const [cfgs,setCfgs]             = useState(Object.fromEntries(Object.entries(PDF_TYPES).map(([k,v])=>[k,{...v}])));
-  const [showAdv,setShowAdv]       = useState(false);
-  const [form,setForm]             = useState({name:"",address:"",city:"",country:"Uruguay",phone:"",notes:""});
-  const [preview,setPreview]       = useState(null);
-  const [busy,setBusy]             = useState(false);
-  const [err,setErr]               = useState(null);
-  const [parsed,setParsed]         = useState(null);
-  const [apiUrl,setApiUrl]         = useState("/print");
-  const [apiKey,setApiKey]         = useState("");
-  const [printing,setPrinting]     = useState(false);
-  const [printStatus,setPrintStatus] = useState(null);
-  const debounce                   = useRef(null);
-
-  useEffect(()=>{
-    if(window.pdfjsLib){setReady(true);return;}
-    const s=document.createElement("script");
-    s.src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-    s.onload=()=>{window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";setReady(true);};
-    document.head.appendChild(s);
-  },[]);
-
-  const processPdf = useCallback(async(f,t,configs,pdf)=>{
-    if(!ready||!f)return;
-    setBusy(true);setErr(null);setPreview(null);setParsed(null);setPrintStatus(null);
-    try{
-      if(t==="shopify"){
-        const page=await pdf.getPage(1);
-        const vp=page.getViewport({scale:1});
-        const tc=await page.getTextContent();
-        const data=extractShopify(tc.items,vp.width,vp.height);
-        if(!data||!data.name){setErr('No se encontró "ENVIAR A"');setBusy(false);return;}
-        setParsed(data);setPreview(drawCleanLabel(data));
-      }else{
-        const cfg=configs[t];
-        const page=await pdf.getPage(cfg.page+1);
-        const vp=page.getViewport({scale:4});
-        const src=document.createElement("canvas");
-        src.width=vp.width;src.height=vp.height;
-        await page.render({canvasContext:src.getContext("2d"),viewport:vp}).promise;
-        const sx=cfg.cx/100*vp.width,sy=cfg.cy/100*vp.height;
-        const sw=cfg.cw/100*vp.width,sh=cfg.ch/100*vp.height;
-        const out=document.createElement("canvas");out.width=W;out.height=H;
-        const oc=out.getContext("2d");oc.fillStyle="#fff";oc.fillRect(0,0,W,H);
-        oc.drawImage(src,sx,sy,sw,sh,0,0,W,H);
-        setPreview(out.toDataURL("image/png",1.0));
-      }
-    }catch(e){setErr("Error: "+e.message);}
-    setBusy(false);
-  },[ready]);
-
-  const handleFile = async f=>{
-    if(!f||!f.name.toLowerCase().endsWith(".pdf"))return;
-    setFile(f);setPreview(null);setErr(null);setParsed(null);setDetectedAs("");setPrintStatus(null);
-    setDetecting(true);
-    try{
-      const buf=await f.arrayBuffer();
-      const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;
-      let t=detectByName(f.name);
-      if(!t) t=await detectByContent(pdf);
-      setDetectedAs(t);setPdfType(t);
-      setDetecting(false);
-      processPdf(f,t,cfgs,pdf);
-    }catch(e){
-      setErr("No se pudo leer el PDF: "+e.message);
-      setDetecting(false);setBusy(false);
-    }
-  };
-
-  const switchType=async t=>{
-    setPdfType(t);setDetectedAs(t);setPrintStatus(null);
-    if(!file)return;
-    const buf=await file.arrayBuffer();
-    const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;
-    processPdf(file,t,cfgs,pdf);
-  };
-
-  const updateCrop=(key,val)=>{
-    const updated={...cfgs,[pdfType]:{...cfgs[pdfType],[key]:+val}};
-    setCfgs(updated);
-    if(debounce.current)clearTimeout(debounce.current);
-    debounce.current=setTimeout(async()=>{
-      const buf=await file.arrayBuffer();
-      const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;
-      processPdf(file,pdfType,updated,pdf);
-    },300);
-  };
-
-  const generateManual=()=>{
-    if(!form.name.trim())return;
-    setPrintStatus(null);
-    setPreview(drawCleanLabel({
-      name:form.name,
-      address:[form.address,form.city].filter(Boolean),
-      country:form.country,phone:form.phone,notes:form.notes,
-    }));
-  };
-
-  const printLabel = async () => {
-    if (!preview || printing) return;
-    setPrinting(true);
-    setPrintStatus(null);
-    try {
-      const blob = dataURLtoBlob(preview);
-      const response = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "image/png", "X-API-Key": apiKey.trim() },
-        body: blob,
-      });
-      const data = await response.json();
-      if (response.ok) {
-        setPrintStatus({ ok: true, msg: "✅ Enviado a imprimir" });
-      } else {
-        setPrintStatus({ ok: false, msg: "❌ " + (data.error || response.status) });
-      }
-    } catch(e) {
-      setPrintStatus({ ok: false, msg: "❌ Error: " + e.message });
-    }
-    setPrinting(false);
-  };
-
-  const allTypes={...PDF_TYPES,shopify:{label:"Shopify",short:"SH",accent:"#96BF48",dot:"#fff"}};
-  const cfg=cfgs[pdfType]||{};
-  const acc=allTypes[pdfType]?.accent||"#000";
-  const dot=allTypes[pdfType]?.dot||"#fff";
-
-  const S={
-    root:{minHeight:"100vh",background:"#f0f0ee",fontFamily:"'Helvetica Neue',Arial,sans-serif",padding:"20px 14px"},
-    wrap:{maxWidth:660,margin:"0 auto"},
-    card:{background:"#fff",borderRadius:14,padding:22,boxShadow:"0 2px 16px rgba(0,0,0,0.07)",marginBottom:12},
-    tabs:{display:"flex",gap:8,marginBottom:16},
-    tab:a=>({padding:"10px 20px",borderRadius:8,border:"none",cursor:"pointer",fontWeight:700,fontSize:14,background:a?"#111":"#e8e8e8",color:a?"#fff":"#555",transition:"all .15s"}),
-    label:{fontSize:11,fontWeight:700,color:"#888",letterSpacing:1,textTransform:"uppercase",display:"block",marginBottom:5},
-    input:{width:"100%",padding:"11px 14px",border:"1px solid #e0e0e0",borderRadius:8,fontSize:15,outline:"none",fontFamily:"inherit",background:"#fafafa"},
-  };
-
-  const PrintBar = () => (
-    <div style={{marginTop:10,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-      <button onClick={printLabel} disabled={printing || !apiKey.trim() || !preview}
-        style={{padding:"11px 22px",borderRadius:8,border:"none",cursor:(printing||!apiKey.trim()||!preview)?"not-allowed":"pointer",
-          background:(printing||!apiKey.trim()||!preview)?"#ddd":"#111",
-          color:(printing||!apiKey.trim()||!preview)?"#aaa":"#fff",
-          fontWeight:700,fontSize:14,transition:"all .15s"}}>
-        {printing ? "Imprimiendo..." : "🖨 Imprimir"}
-      </button>
-      {!apiKey.trim() && <span style={{fontSize:11,color:"#ccc"}}>Ingresá la API key para imprimir</span>}
-      {printStatus && (
-        <span style={{fontSize:13,fontWeight:600,color:printStatus.ok?"#2e7d32":"#c62828"}}>
-          {printStatus.msg}
-        </span>
-      )}
-    </div>
-  );
-
-  return(
-    <div style={S.root}>
-      <style>{`@keyframes spin{to{transform:rotate(360deg)}}@keyframes pop{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}*{box-sizing:border-box;margin:0;padding:0}input:focus,textarea:focus{border-color:#999!important;background:#fff!important}`}</style>
-      <div style={S.wrap}>
-
-        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
-          <div style={{background:"#000",color:"#fff",padding:"7px 16px",borderRadius:6,fontWeight:800,fontSize:20}}>KAI DECO</div>
-          <div style={{color:"#aaa",fontSize:13}}>Generador de etiquetas · 80×100mm</div>
-        </div>
-
-        {/* ── Configuración de conexión ── */}
-        <div style={{...S.card,padding:16,marginBottom:12}}>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <div>
-              <label style={S.label}>API URL</label>
-              <input style={S.input} value={apiUrl} onChange={e=>setApiUrl(e.target.value)}/>
-            </div>
-            <div>
-              <label style={S.label}>API Key</label>
-              <input style={S.input} type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="••••••••"/>
-            </div>
+      const PreviewPanel = ({ downloadName }) => (
+        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:10,minWidth:160}}>
+          <div style={{width:152,height:190,background:"#f0f0f0",borderRadius:6,overflow:"hidden",
+            display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 2px 8px rgba(0,0,0,.1)"}}>
+            {busy  && <Spinner/>}
+            {!busy && error   && <div style={{color:"#f55",fontSize:11,padding:8,textAlign:"center"}}>{error}</div>}
+            {!busy && !error  && preview && <img src={preview.url} style={{width:"100%",height:"100%",objectFit:"contain"}} alt="preview"/>}
+            {!busy && !error  && !preview && <span style={{color:"#ccc",fontSize:22}}>—</span>}
           </div>
-        </div>
+          <div style={{fontSize:9,color:"#ccc"}}>638×799px · 203dpi</div>
 
-        <div style={S.tabs}>
-          <button style={S.tab(tab==="pdf")}    onClick={()=>{setTab("pdf");setPreview(null);setErr(null);setPrintStatus(null);}}>📄 Desde PDF</button>
-          <button style={S.tab(tab==="manual")} onClick={()=>{setTab("manual");setPreview(null);setErr(null);setPrintStatus(null);}}>✏️ Manual</button>
-        </div>
-
-        {/* ── TAB PDF ── */}
-        {tab==="pdf"&&(
-          <div style={S.card}>
-            {!file?(
-              <div
-                onDragOver={e=>{e.preventDefault();setDrag(true);}}
-                onDragLeave={()=>setDrag(false)}
-                onDrop={e=>{e.preventDefault();setDrag(false);handleFile(e.dataTransfer.files[0]);}}
-                onClick={()=>document.getElementById("_fi").click()}
-                style={{border:`2px dashed ${drag?"#555":"#ddd"}`,borderRadius:10,padding:"44px 20px",textAlign:"center",cursor:"pointer",background:drag?"#f5f5f5":"#fafafa",transition:"all .2s"}}
-              >
-                <div style={{fontSize:40,marginBottom:10}}>📤</div>
-                <div style={{fontWeight:700,fontSize:17,marginBottom:5}}>Subí tu PDF</div>
-                <div style={{color:"#bbb",fontSize:12}}>arrastrá o hacé click</div>
-                <div style={{color:"#ddd",fontSize:11,marginTop:8}}>ML · GestionPost · Shopify — detecta automático</div>
-                {!ready&&<div style={{marginTop:10,color:"#ccc",fontSize:11}}>⏳ cargando lector...</div>}
-                <input id="_fi" type="file" accept=".pdf" style={{display:"none"}} onChange={e=>handleFile(e.target.files[0])}/>
+          {preview && !busy && (<>
+            <a href={preview.url} download={downloadName}
+              style={{...S.btn(true),textDecoration:"none",display:"inline-flex",alignItems:"center",gap:6,padding:"9px 18px",fontSize:13}}>
+              ⬇ Descargar
+            </a>
+            <button onClick={handlePrint} disabled={!apiKey.trim()}
+              style={{...S.btn(!!apiKey.trim()),padding:"9px 18px",fontSize:13}}>
+              🖨 Imprimir
+            </button>
+            {!apiKey.trim() && <div style={{fontSize:10,color:"#ccc",textAlign:"center"}}>Ingresá la API key</div>}
+            {printMsg && (
+              <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:printMsg.ok?"#2e7d32":"#c62828"}}>
+                {printMsg.msg}
               </div>
-            ):(
-              <>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
-                  <div style={{fontSize:12,color:"#888",display:"flex",alignItems:"center",gap:6}}>
-                    <span>📄</span>
-                    <span style={{maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{file.name}</span>
-                    <button onClick={()=>{setFile(null);setPreview(null);setErr(null);setParsed(null);setDetectedAs("");setPrintStatus(null);}}
-                      style={{background:"#f0f0f0",border:"none",color:"#888",fontSize:11,padding:"2px 8px",borderRadius:4,cursor:"pointer"}}>
-                      cambiar
-                    </button>
-                  </div>
-                  <div style={{display:"flex",gap:6}}>
-                    {Object.entries(allTypes).map(([k,v])=>(
-                      <button key={k} onClick={()=>switchType(k)}
-                        style={{padding:"5px 12px",borderRadius:4,border:`2px solid ${pdfType===k?v.accent:"#ddd"}`,
-                          background:pdfType===k?v.accent:"transparent",color:pdfType===k?v.dot:"#888",
-                          fontFamily:"monospace",fontSize:11,fontWeight:700,cursor:"pointer",letterSpacing:1,transition:"all .15s"}}>
-                        {v.short}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+            )}
+          </>)}
+        </div>
+      );
 
-                <div style={{marginBottom:14,padding:"7px 12px",borderRadius:6,
-                  background:detecting?"#f5f5f5":"#f0fff0",
-                  border:`1px solid ${detecting?"#eee":"#c8e6c9"}`,
-                  fontSize:12,display:"flex",alignItems:"center",gap:8}}>
-                  {detecting?(
-                    <><div style={{width:12,height:12,border:"2px solid #ddd",borderTopColor:"#333",borderRadius:"50%",animation:"spin .7s linear infinite"}}/><span style={{color:"#aaa"}}>Detectando tipo de etiqueta...</span></>
-                  ):(
-                    <><span>✅</span><span style={{color:"#2e7d32"}}>Detectado como <b>{allTypes[detectedAs]?.label||detectedAs}</b><span style={{color:"#aaa",fontWeight:400}}> · cambiá si es incorrecto</span></span></>
+      return (
+        <div style={S.root}>
+          <style>{`@keyframes spin{to{transform:rotate(360deg)}}*{box-sizing:border-box;margin:0;padding:0}input:focus,textarea:focus{border-color:#999!important;background:#fff!important}`}</style>
+          <div style={S.wrap}>
+
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+              <div style={{background:"#000",color:"#fff",padding:"7px 16px",borderRadius:6,fontWeight:800,fontSize:20}}>KAI DECO</div>
+              <div style={{color:"#aaa",fontSize:13}}>Generador de etiquetas · 80×100mm</div>
+            </div>
+
+            {/* Config */}
+            <div style={{...S.card,padding:16}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <div>
+                  <label style={S.label}>Servidor</label>
+                  <input style={S.input} value={apiBase} onChange={e=>setApiBase(e.target.value)} placeholder="http://192.168.0.x:8080 (vacío = este servidor)"/>
+                </div>
+                <div>
+                  <label style={S.label}>API Key</label>
+                  <input style={S.input} type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="••••••••"/>
+                </div>
+              </div>
+            </div>
+
+            {/* Tabs */}
+            <div style={{display:"flex",gap:8,margin:"12px 0"}}>
+              <button style={S.tab(tab==="pdf")}    onClick={()=>switchTab("pdf")}>📄 Desde PDF</button>
+              <button style={S.tab(tab==="manual")} onClick={()=>switchTab("manual")}>✏️ Manual</button>
+            </div>
+
+            {/* ── PDF TAB ── */}
+            {tab==="pdf" && (
+              <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:20,alignItems:"start"}}>
+                <div style={S.card}>
+                  <div
+                    onDragOver={e=>{e.preventDefault();setDrag(true)}}
+                    onDragLeave={()=>setDrag(false)}
+                    onDrop={e=>{e.preventDefault();setDrag(false);handlePdf(e.dataTransfer.files[0])}}
+                    onClick={()=>document.getElementById("_fi").click()}
+                    style={{border:`2px dashed ${drag?"#555":"#ddd"}`,borderRadius:10,padding:"36px 20px",
+                      textAlign:"center",cursor:"pointer",background:drag?"#f5f5f5":"#fafafa",transition:"all .2s"}}
+                  >
+                    <div style={{fontSize:36,marginBottom:8}}>📤</div>
+                    <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>Subí tu PDF</div>
+                    <div style={{color:"#bbb",fontSize:12}}>arrastrá o hacé click</div>
+                    <div style={{color:"#ddd",fontSize:11,marginTop:6}}>ML · GestionPost · Shopify — detecta automático</div>
+                    <input id="_fi" type="file" accept=".pdf" style={{display:"none"}} onChange={e=>{handlePdf(e.target.files[0]);e.target.value="";}}/>
+                  </div>
+
+                  {preview?.labelType && (
+                    <div style={{marginTop:12,padding:"7px 12px",borderRadius:6,background:"#f0fff0",border:"1px solid #c8e6c9",fontSize:12}}>
+                      ✅ Detectado como <b>{TYPE_LABELS[preview.labelType] || preview.labelType}</b>
+                    </div>
                   )}
                 </div>
-
-                <div style={{display:"flex",gap:20,flexWrap:"wrap",alignItems:"flex-start"}}>
-                  <div>
-                    <div style={{fontSize:10,color:"#bbb",letterSpacing:1,marginBottom:6,textTransform:"uppercase"}}>Preview 80×100mm</div>
-                    <div style={{width:152,height:190,background:"#f0f0f0",borderRadius:6,overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 2px 8px rgba(0,0,0,0.1)"}}>
-                      {(busy||detecting)&&<div style={{width:24,height:24,border:"3px solid #ddd",borderTopColor:"#333",borderRadius:"50%",animation:"spin .7s linear infinite"}}/>}
-                      {!busy&&!detecting&&err&&<div style={{color:"#f55",fontSize:11,padding:8,textAlign:"center"}}>{err}</div>}
-                      {!busy&&!detecting&&preview&&<img src={preview} style={{width:"100%",height:"100%",objectFit:"contain",animation:"pop .2s ease"}} alt="preview"/>}
-                      {!busy&&!detecting&&!preview&&!err&&<span style={{color:"#ccc",fontSize:22}}>—</span>}
-                    </div>
-                    <div style={{fontSize:9,color:"#ccc",textAlign:"center",marginTop:4}}>638×799px · 203dpi</div>
-                  </div>
-
-                  <div style={{flex:1,minWidth:180}}>
-                    {pdfType==="shopify"?(
-                      parsed&&(
-                        <div style={{background:"#f8fff8",border:"1px solid #c8e6c9",borderRadius:8,padding:14,fontSize:13}}>
-                          <div style={{fontWeight:700,color:"#2e7d32",marginBottom:8,fontSize:11,textTransform:"uppercase",letterSpacing:1}}>✓ Datos detectados</div>
-                          <div style={{color:"#555",lineHeight:1.9}}>
-                            <b>{parsed.name}</b><br/>
-                            {parsed.street}<br/>
-                            {parsed.cityLine}<br/>
-                            {parsed.phone&&<>Tel: {parsed.phone}</>}
-                          </div>
-                        </div>
-                      )
-                    ):(
-                      <>
-                        <button onClick={()=>setShowAdv(!showAdv)}
-                          style={{background:"none",border:"none",cursor:"pointer",color:"#aaa",fontSize:12,display:"flex",alignItems:"center",gap:6,padding:0,marginBottom:12,letterSpacing:1,textTransform:"uppercase"}}>
-                          ⚙ Ajustar recorte <span style={{fontSize:9}}>{showAdv?"▲":"▼"}</span>
-                        </button>
-                        {showAdv&&(
-                          <div style={{background:"#fafafa",border:"1px solid #eee",borderRadius:8,padding:14}}>
-                            {[{k:"cx",n:"Inicio X"},{k:"cy",n:"Inicio Y"},{k:"cw",n:"Ancho"},{k:"ch",n:"Alto"}].map(({k,n})=>(
-                              <div key={k} style={{marginBottom:12}}>
-                                <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
-                                  <span style={{fontSize:10,color:"#aaa",letterSpacing:1,textTransform:"uppercase"}}>{n}</span>
-                                  <span style={{fontSize:11,fontWeight:700}}>{cfg[k]}%</span>
-                                </div>
-                                <input type="range" min="0" max="100" value={cfg[k]||0} style={{width:"100%",accentColor:acc}} onChange={e=>updateCrop(k,e.target.value)}/>
-                              </div>
-                            ))}
-                            <button onClick={async()=>{
-                              const u={...cfgs,[pdfType]:{...PDF_TYPES[pdfType]}};setCfgs(u);
-                              const buf=await file.arrayBuffer();
-                              const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;
-                              processPdf(file,pdfType,u,pdf);
-                            }} style={{background:"none",border:"none",color:"#ccc",fontSize:10,cursor:"pointer",letterSpacing:1,textTransform:"uppercase"}}>
-                              ↺ RESETEAR
-                            </button>
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {preview&&!busy&&!detecting&&(
-                  <div style={{marginTop:18,paddingTop:18,borderTop:"1px solid #f5f5f5"}}>
-                    <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-                      <a href={preview} download={`etiqueta_${pdfType}_${Date.now()}.png`}
-                        style={{display:"inline-flex",alignItems:"center",gap:8,padding:"11px 22px",borderRadius:8,background:acc,color:dot,fontWeight:700,fontSize:14,textDecoration:"none"}}>
-                        ⬇ Descargar PNG
-                      </a>
-                      <span style={{fontSize:11,color:"#ccc"}}>638×799px · 80×100mm · 203dpi</span>
-                    </div>
-                    <PrintBar/>
-                  </div>
-                )}
-              </>
+                <PreviewPanel downloadName={`etiqueta_${preview?.labelType||"pdf"}_${Date.now()}.png`}/>
+              </div>
             )}
-          </div>
-        )}
 
-        {/* ── TAB MANUAL ── */}
-        {tab==="manual"&&(
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,alignItems:"start"}}>
-            <div style={S.card}>
-              <div style={{fontWeight:800,fontSize:16,marginBottom:18}}>Nueva etiqueta</div>
-              {[
-                {key:"name",    label:"Nombre del cliente *", placeholder:"Ej: Gonzalo Cámara"},
-                {key:"address", label:"Dirección",            placeholder:"Ej: Av. Gonzalo Ramírez 1329 Apto 1909"},
-                {key:"city",    label:"Ciudad / Código postal",placeholder:"Ej: 11100 Montevideo"},
-                {key:"country", label:"País",                 placeholder:"Ej: Uruguay"},
-                {key:"phone",   label:"Teléfono",             placeholder:"Ej: 099 238 500"},
-              ].map(({key,label,placeholder})=>(
-                <div key={key} style={{marginBottom:14}}>
-                  <label style={S.label}>{label}</label>
-                  <input style={S.input} placeholder={placeholder} value={form[key]} onChange={e=>setForm({...form,[key]:e.target.value})}/>
-                </div>
-              ))}
-              <div style={{marginBottom:20}}>
-                <label style={S.label}>Notas <span style={{color:"#ccc",fontWeight:400,textTransform:"none",letterSpacing:0}}>(opcional)</span></label>
-                <textarea style={{...S.input,height:80,resize:"vertical",lineHeight:1.5}}
-                  placeholder="Ej: Entregar en portería, llamar antes..."
-                  value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/>
-              </div>
-              <button onClick={generateManual} disabled={!form.name.trim()}
-                style={{width:"100%",padding:"13px",borderRadius:8,border:"none",cursor:form.name.trim()?"pointer":"not-allowed",
-                  background:form.name.trim()?"#111":"#ddd",color:form.name.trim()?"#fff":"#aaa",fontWeight:700,fontSize:15,transition:"all .15s"}}>
-                Generar etiqueta
-              </button>
-              <button onClick={()=>{setForm({name:"",address:"",city:"",country:"Uruguay",phone:"",notes:""});setPreview(null);setPrintStatus(null);}}
-                style={{width:"100%",marginTop:8,padding:"8px",borderRadius:8,border:"1px solid #eee",background:"transparent",color:"#ccc",fontSize:12,cursor:"pointer"}}>
-                Limpiar
-              </button>
-            </div>
-
-            <div style={S.card}>
-              <div style={{fontSize:11,color:"#bbb",letterSpacing:1,marginBottom:10,textTransform:"uppercase"}}>Preview — 80×100mm</div>
-              <div style={{background:"#f5f5f5",borderRadius:8,padding:10,display:"flex",justifyContent:"center"}}>
-                <div style={{width:160,height:200,background:"#fff",borderRadius:4,overflow:"hidden",boxShadow:"0 2px 10px rgba(0,0,0,0.1)",display:"flex",alignItems:"center",justifyContent:"center"}}>
-                  {preview
-                    ?<img src={preview} style={{width:"100%",height:"100%",objectFit:"contain",animation:"pop .2s ease"}} alt="label"/>
-                    :<div style={{textAlign:"center",color:"#ccc",padding:12,fontSize:12,lineHeight:1.8}}>
-                      <div style={{fontSize:28,marginBottom:8}}>🏷️</div>
-                      Completá el formulario<br/>y generá la etiqueta
+            {/* ── MANUAL TAB ── */}
+            {tab==="manual" && (
+              <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:20,alignItems:"start"}}>
+                <div style={S.card}>
+                  <div style={{fontWeight:800,fontSize:16,marginBottom:16}}>Nueva etiqueta</div>
+                  {[
+                    {key:"name",    label:"Nombre *",              placeholder:"Ej: Gonzalo Cámara"},
+                    {key:"address", label:"Dirección",             placeholder:"Ej: Av. Gonzalo Ramírez 1329 Apto 1909"},
+                    {key:"city",    label:"Ciudad / Cód. postal",  placeholder:"Ej: 11100 Montevideo"},
+                    {key:"country", label:"País",                  placeholder:"Ej: Uruguay"},
+                    {key:"phone",   label:"Teléfono",              placeholder:"Ej: 099 238 500"},
+                  ].map(({key,label,placeholder})=>(
+                    <div key={key} style={{marginBottom:12}}>
+                      <label style={S.label}>{label}</label>
+                      <input style={S.input} placeholder={placeholder} value={form[key]} onChange={e=>setForm({...form,[key]:e.target.value})}/>
                     </div>
-                  }
+                  ))}
+                  <div style={{marginBottom:16}}>
+                    <label style={S.label}>Notas <span style={{fontWeight:400,textTransform:"none",letterSpacing:0,color:"#ccc"}}>(opcional)</span></label>
+                    <textarea style={{...S.input,height:72,resize:"vertical"}}
+                      placeholder="Ej: Entregar en portería, llamar antes..."
+                      value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/>
+                  </div>
+                  <button onClick={handleGenerate} disabled={!form.name.trim()||busy}
+                    style={{...S.btn(!!form.name.trim()&&!busy),width:"100%",padding:"13px"}}>
+                    Generar etiqueta
+                  </button>
+                  <button onClick={()=>{setForm({name:"",address:"",city:"",country:"Uruguay",phone:"",notes:""});clearPreview();}}
+                    style={{width:"100%",marginTop:8,padding:"8px",borderRadius:8,border:"1px solid #eee",background:"transparent",color:"#ccc",fontSize:12,cursor:"pointer"}}>
+                    Limpiar
+                  </button>
                 </div>
+                <PreviewPanel downloadName={`etiqueta_${form.name.replace(/\s+/g,"_")||Date.now()}.png`}/>
               </div>
-              <div style={{fontSize:9,color:"#ccc",textAlign:"center",marginTop:6}}>638×799px · 203dpi</div>
-              {preview&&(
-                <div style={{marginTop:14}}>
-                  <a href={preview} download={`etiqueta_${form.name.replace(/\s+/g,"_")||Date.now()}.png`}
-                    style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"12px",borderRadius:8,background:"#111",color:"#fff",fontWeight:700,fontSize:14,textDecoration:"none"}}>
-                    ⬇ Descargar PNG
-                  </a>
-                  <div style={{fontSize:10,color:"#ccc",textAlign:"center",marginTop:5}}>638×799px · PNG · 203dpi · 80×100mm</div>
-                  <PrintBar/>
-                </div>
-              )}
-            </div>
+            )}
+
           </div>
-        )}
+        </div>
+      );
+    }
 
-      </div>
-    </div>
-  );
-}
-
-
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<App/>);
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
   </script>
 </body>
 </html>
