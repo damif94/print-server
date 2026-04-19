@@ -6,6 +6,7 @@ PORT = 8080
 API_KEY = "agustinmanya1994"
 
 # Label dimensions: 80x100mm at 203 DPI
+PRINTER_DPI = 203
 LABEL_WIDTH_PX = 639   # 80mm * 203 / 25.4
 LABEL_HEIGHT_PX = 799  # 100mm * 203 / 25.4
 LABEL_MEDIA = "Custom.80x100mm"

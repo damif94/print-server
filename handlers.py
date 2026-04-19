@@ -8,7 +8,7 @@ import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
-from config import API_KEY, INDEX_FILE, LABEL_HEIGHT_PX, LABEL_MEDIA, LABEL_WIDTH_PX, PRINTER_NAME
+from config import API_KEY, INDEX_FILE, LABEL_HEIGHT_PX, LABEL_MEDIA, LABEL_WIDTH_PX, PRINTER_DPI, PRINTER_NAME
 from logging_utils import build_request_body_log, log_request_response
 
 
@@ -189,14 +189,16 @@ class PrintHandler(BaseHTTPRequestHandler):
             if matched_type in ("image/png", "image/jpeg"):
                 resized_path = os.path.join(temp_dir, f"resized{matched_ext}")
                 self._resize_image_for_label(upload_path, resized_path)
+                subprocess.run(["sips", "-r", "180", resized_path], capture_output=True, text=True, check=True)
                 print_path = resized_path
 
             cmd = [
                 "lp",
-                "-d",
-                PRINTER_NAME,
-                "-o",
-                f"media={LABEL_MEDIA}",
+                "-d", PRINTER_NAME,
+                "-o", f"media={LABEL_MEDIA}",
+                "-o", "orientation-requested=3",
+                "-o", f"printer-resolution={PRINTER_DPI}dpi",
+                "-o", "scaling=100",
                 print_path,
             ]
 

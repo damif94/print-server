@@ -39,6 +39,8 @@ const detectByName = name => {
   const n = name.toLowerCase();
   if (n.includes("packing_slip") || n.includes("shopify")) return "shopify";
   if (n.includes("gestion")) return "gestionpost";
+  // "labels" es genérico (tanto ML FLEX como ML Melinet se llaman así)
+  // → siempre pasar al contenido para distinguirlos
   return null;
 };
 
@@ -69,10 +71,12 @@ const drawCleanLabel = (data) => {
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d");
 
+  // Fondo blanco + borde
   ctx.fillStyle = "#fff"; ctx.fillRect(0,0,W,H);
   ctx.strokeStyle = "#ddd"; ctx.lineWidth = 2;
   ctx.strokeRect(6,6,W-12,H-12);
 
+  // ── Header KAI DECO ──
   const HEADER_H = Math.round(H * 0.18);
   ctx.fillStyle = "#000"; ctx.fillRect(0,0,W,HEADER_H);
   ctx.fillStyle = "#fff";
@@ -81,17 +85,20 @@ const drawCleanLabel = (data) => {
   ctx.fillText("KAI DECO", W/2, HEADER_H/2);
   ctx.textAlign = "left"; ctx.textBaseline = "top";
 
+  // ── Zona reservada para el teléfono (siempre al fondo) ──
   const phoneSz    = Math.round(H * 0.075);
   const phoneH     = Math.round(phoneSz * 1.35);
   const bottomPad  = Math.round(H * 0.035);
-  const phoneZoneH = phoneH + Math.round(H * 0.055);
+  const phoneZoneH = phoneH + Math.round(H * 0.055); // incluye línea sep + margen
   const phoneY     = H - bottomPad - phoneH;
 
+  // ── Espacio disponible para el contenido ──
   const contentTop = HEADER_H + Math.round(H * 0.04);
   const contentBot = H - phoneZoneH;
   const available  = contentBot - contentTop;
   const maxW       = W - PAD * 2;
 
+  // Función para contar líneas que necesita un texto
   function countLines(txt, font) {
     if (!txt || !txt.trim()) return 0;
     ctx.font = font;
@@ -104,23 +111,26 @@ const drawCleanLabel = (data) => {
     return count;
   }
 
+  // Calcular tamaños base
   let nameSz = Math.round(H * 0.082);
   let addrSz = Math.round(H * 0.064);
-  const sepH = Math.round(H * 0.018) + Math.round(H * 0.015);
+  const sepH = Math.round(H * 0.018) + Math.round(H * 0.015); // separador + margen
   const notesSz = Math.round(H * 0.055);
 
+  // Calcular altura total necesaria con tamaños base
   function calcTotalH(nSz, aSz) {
     const nameLines = countLines(name,     "bold " + nSz + "px Arial");
     const strLines  = countLines(streetTxt, aSz + "px Arial");
     const cityLines = countLines(cityTxt,   aSz + "px Arial");
     const noteLines = notes.trim() ? countLines(notes, notesSz + "px Arial") + 1 : 0;
-    return (nameLines * nSz * 1.35) + Math.round(H * 0.01)
-         + sepH
-         + (strLines  * aSz  * 1.35) + Math.round(H * 0.006)
-         + (cityLines * aSz  * 1.35)
+    return (nameLines * nSz * 1.35) + Math.round(H * 0.01)  // nombre + margen
+         + sepH                                               // separador
+         + (strLines  * aSz  * 1.35) + Math.round(H * 0.006) // calle + margen
+         + (cityLines * aSz  * 1.35)                          // ciudad
          + (noteLines * notesSz * 1.35) + (notes.trim() ? Math.round(H*0.03) : 0);
   }
 
+  // Escalar hacia abajo si no entra (hasta un mínimo razonable)
   let scale = 1.0;
   while (calcTotalH(nameSz * scale, addrSz * scale) > available && scale > 0.6) {
     scale -= 0.05;
@@ -128,6 +138,7 @@ const drawCleanLabel = (data) => {
   nameSz = Math.round(nameSz * scale);
   addrSz = Math.round(addrSz * scale);
 
+  // ── Función de dibujo ──
   let y = contentTop;
 
   function writeLine(txt, fontSize, bold, color) {
@@ -150,21 +161,26 @@ const drawCleanLabel = (data) => {
     y += margin;
   }
 
+  // Nombre
   writeLine(name, nameSz, true, "#000");
   y += Math.round(H * 0.01);
   drawSep("#e0e0e0", Math.round(H * 0.018));
 
+  // Dirección
   writeLine(streetTxt, addrSz, false, "#222");
   y += Math.round(H * 0.006);
 
+  // Ciudad / Departamento
   writeLine(cityTxt, addrSz, false, "#222");
 
+  // Notas
   if (notes && notes.trim()) {
     y += Math.round(H * 0.02);
     drawSep("#f0f0f0", Math.round(H * 0.012));
     writeLine("📌  " + notes, notesSz, false, "#555");
   }
 
+  // ── Teléfono — siempre al fondo ──
   if (phone && phone.trim()) {
     ctx.strokeStyle = "#000"; ctx.lineWidth = 3;
     ctx.beginPath();
@@ -200,19 +216,26 @@ const extractShopify = (items, pageW, pageH) => {
     maxX: Math.max(...l.items.map(i => i.x)),
   }));
 
+  // Encontrar la línea que tiene "ENVIAR A" y "FACTURAR A"
   const headerIdx = lines.findIndex(l => l.text.toLowerCase().includes("enviar a"));
   if (headerIdx === -1) return null;
   const headerLine = lines[headerIdx];
 
+  // Encontrar la X donde empieza "FACTURAR A" → esa es la división de columnas
+  // Buscamos el item "FACTURAR" dentro de esa línea
   const facturarItem = headerLine.items.find(i => i.str.toLowerCase().includes("facturar"));
+  // Si no lo encuentra usamos 45% del ancho como fallback
   const colDivX = facturarItem ? facturarItem.x : pageW * 0.45;
 
+  // Recolectar líneas de la columna izquierda (ENVIAR A) únicamente
   const STOP = ["artículos", "articulos", "notas", "gracias", "cantidad"];
   const addr = [];
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const line = lines[i];
     const text = line.text;
+    // Parar en secciones de artículos
     if (STOP.some(w => text.toLowerCase().startsWith(w))) break;
+    // Solo tomar items de la columna izquierda (X < colDivX)
     const leftItems = line.items.filter(item => item.x < colDivX);
     if (!leftItems.length) continue;
     const leftText = leftItems.map(i => i.str).join(" ").trim();
@@ -221,8 +244,10 @@ const extractShopify = (items, pageW, pageH) => {
 
   if (!addr.length) return null;
 
+  // Nombre = primera línea
   const name = addr[0] || "";
 
+  // Teléfono uruguayo
   const isUY = l => {
     const cc = l.replace(/[\s\-(). ]/g, "");
     return /^(\+?598)?0?9\d{7,8}$/.test(cc)
@@ -233,6 +258,7 @@ const extractShopify = (items, pageW, pageH) => {
   const country = addr.find(l => /^(uruguay|argentina|brasil|chile|paraguay|peru|mexico)/i.test(l)) || "";
   const rest    = addr.filter(l => l !== name && l !== phone && l !== country);
 
+  // Separar calle de ciudad
   let cityLine = "", streetLines = [];
   const cityIdx = rest.findIndex(l =>
     /UY-/i.test(l) ||
@@ -246,6 +272,8 @@ const extractShopify = (items, pageW, pageH) => {
     cityLine    = rest[rest.length - 1] || "";
   }
 
+  // Reemplazar códigos UY-XX con nombre real del departamento
+  // Códigos ISO 3166-2:UY oficiales
   const DEPTOS = {
     AR:'Artigas',    CA:'Canelones',     CL:'Cerro Largo',    CO:'Colonia',
     DU:'Durazno',    FS:'Flores',        FD:'Florida',        LA:'Lavalleja',
@@ -259,8 +287,9 @@ const extractShopify = (items, pageW, pageH) => {
     .replace(/\s+/g, ' ').trim()
     .replace(/^,|,$/g, '').trim();
 
+  // Unir todas las líneas de calle (la dirección puede ocupar 2+ líneas en Shopify)
   const street     = streetLines.join(" ") || "";
-  const extraNotes = "";
+  const extraNotes = "";  // Las notas reales vienen del campo de notas del pedido, no de la dirección
 
   const ol    = lines.find(l => /pedido\s*#/i.test(l.text));
   const order = ol ? ol.text.match(/pedido\s*#\s*(\d+)/i)?.[1] : null;
@@ -268,37 +297,23 @@ const extractShopify = (items, pageW, pageH) => {
   return { name, street, cityLine: cleanCity, phone, order, notes: extraNotes };
 };
 
-// ── Convierte data URL a Blob ─────────────────────────────────────────────────
-const dataURLtoBlob = (dataUrl) => {
-  const [header, data] = dataUrl.split(',');
-  const mime = header.match(/:(.*?);/)[1];
-  const bytes = atob(data);
-  const arr = new Uint8Array(bytes.length);
-  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
-  return new Blob([arr], { type: mime });
-};
-
 // ════════════════════════════════════════════════════════════════════════════
 function App() {
-  const [tab,setTab]               = useState("pdf");
-  const [ready,setReady]           = useState(false);
-  const [detecting,setDetecting]   = useState(false);
-  const [file,setFile]             = useState(null);
-  const [drag,setDrag]             = useState(false);
-  const [pdfType,setPdfType]       = useState("mercadolibre");
+  const [tab,setTab]           = useState("pdf");
+  const [ready,setReady]       = useState(false);
+  const [detecting,setDetecting] = useState(false);
+  const [file,setFile]         = useState(null);
+  const [drag,setDrag]         = useState(false);
+  const [pdfType,setPdfType]   = useState("mercadolibre");
   const [detectedAs,setDetectedAs] = useState("");
-  const [cfgs,setCfgs]             = useState(Object.fromEntries(Object.entries(PDF_TYPES).map(([k,v])=>[k,{...v}])));
-  const [showAdv,setShowAdv]       = useState(false);
-  const [form,setForm]             = useState({name:"",address:"",city:"",country:"Uruguay",phone:"",notes:""});
-  const [preview,setPreview]       = useState(null);
-  const [busy,setBusy]             = useState(false);
-  const [err,setErr]               = useState(null);
-  const [parsed,setParsed]         = useState(null);
-  const [apiUrl,setApiUrl]         = useState("/print");
-  const [apiKey,setApiKey]         = useState("");
-  const [printing,setPrinting]     = useState(false);
-  const [printStatus,setPrintStatus] = useState(null);
-  const debounce                   = useRef(null);
+  const [cfgs,setCfgs]         = useState(Object.fromEntries(Object.entries(PDF_TYPES).map(([k,v])=>[k,{...v}])));
+  const [showAdv,setShowAdv]   = useState(false);
+  const [form,setForm]         = useState({name:"",address:"",city:"",country:"Uruguay",phone:"",notes:""});
+  const [preview,setPreview]   = useState(null);
+  const [busy,setBusy]         = useState(false);
+  const [err,setErr]           = useState(null);
+  const [parsed,setParsed]     = useState(null);
+  const debounce               = useRef(null);
 
   useEffect(()=>{
     if(window.pdfjsLib){setReady(true);return;}
@@ -310,7 +325,7 @@ function App() {
 
   const processPdf = useCallback(async(f,t,configs,pdf)=>{
     if(!ready||!f)return;
-    setBusy(true);setErr(null);setPreview(null);setParsed(null);setPrintStatus(null);
+    setBusy(true);setErr(null);setPreview(null);setParsed(null);
     try{
       if(t==="shopify"){
         const page=await pdf.getPage(1);
@@ -337,15 +352,16 @@ function App() {
     setBusy(false);
   },[ready]);
 
+  // ← ESTA es la función corregida que usa detectByName + detectByContent
   const handleFile = async f=>{
     if(!f||!f.name.toLowerCase().endsWith(".pdf"))return;
-    setFile(f);setPreview(null);setErr(null);setParsed(null);setDetectedAs("");setPrintStatus(null);
+    setFile(f);setPreview(null);setErr(null);setParsed(null);setDetectedAs("");
     setDetecting(true);
     try{
       const buf=await f.arrayBuffer();
       const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;
-      let t=detectByName(f.name);
-      if(!t) t=await detectByContent(pdf);
+      let t=detectByName(f.name);          // 1° por nombre
+      if(!t) t=await detectByContent(pdf); // 2° por contenido (siempre para nombres genéricos)
       setDetectedAs(t);setPdfType(t);
       setDetecting(false);
       processPdf(f,t,cfgs,pdf);
@@ -356,7 +372,7 @@ function App() {
   };
 
   const switchType=async t=>{
-    setPdfType(t);setDetectedAs(t);setPrintStatus(null);
+    setPdfType(t);setDetectedAs(t);
     if(!file)return;
     const buf=await file.arrayBuffer();
     const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;
@@ -376,7 +392,6 @@ function App() {
 
   const generateManual=()=>{
     if(!form.name.trim())return;
-    setPrintStatus(null);
     setPreview(drawCleanLabel({
       name:form.name,
       address:[form.address,form.city].filter(Boolean),
@@ -384,30 +399,8 @@ function App() {
     }));
   };
 
-  const printLabel = async () => {
-    if (!preview || printing) return;
-    setPrinting(true);
-    setPrintStatus(null);
-    try {
-      const blob = dataURLtoBlob(preview);
-      const response = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "image/png", "X-API-Key": apiKey.trim() },
-        body: blob,
-      });
-      const data = await response.json();
-      if (response.ok) {
-        setPrintStatus({ ok: true, msg: "✅ Enviado a imprimir" });
-      } else {
-        setPrintStatus({ ok: false, msg: "❌ " + (data.error || response.status) });
-      }
-    } catch(e) {
-      setPrintStatus({ ok: false, msg: "❌ Error: " + e.message });
-    }
-    setPrinting(false);
-  };
-
   const allTypes={...PDF_TYPES,shopify:{label:"Shopify",short:"SH",accent:"#96BF48",dot:"#fff"}};
+  // mlmelinet ya está en PDF_TYPES, shopify se agrega acá porque no tiene recorte propio
   const cfg=cfgs[pdfType]||{};
   const acc=allTypes[pdfType]?.accent||"#000";
   const dot=allTypes[pdfType]?.dot||"#fff";
@@ -422,51 +415,19 @@ function App() {
     input:{width:"100%",padding:"11px 14px",border:"1px solid #e0e0e0",borderRadius:8,fontSize:15,outline:"none",fontFamily:"inherit",background:"#fafafa"},
   };
 
-  const PrintBar = () => (
-    <div style={{marginTop:10,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-      <button onClick={printLabel} disabled={printing || !apiKey.trim() || !preview}
-        style={{padding:"11px 22px",borderRadius:8,border:"none",cursor:(printing||!apiKey.trim()||!preview)?"not-allowed":"pointer",
-          background:(printing||!apiKey.trim()||!preview)?"#ddd":"#111",
-          color:(printing||!apiKey.trim()||!preview)?"#aaa":"#fff",
-          fontWeight:700,fontSize:14,transition:"all .15s"}}>
-        {printing ? "Imprimiendo..." : "🖨 Imprimir"}
-      </button>
-      {!apiKey.trim() && <span style={{fontSize:11,color:"#ccc"}}>Ingresá la API key para imprimir</span>}
-      {printStatus && (
-        <span style={{fontSize:13,fontWeight:600,color:printStatus.ok?"#2e7d32":"#c62828"}}>
-          {printStatus.msg}
-        </span>
-      )}
-    </div>
-  );
-
   return(
     <div style={S.root}>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}@keyframes pop{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}*{box-sizing:border-box;margin:0;padding:0}input:focus,textarea:focus{border-color:#999!important;background:#fff!important}`}</style>
       <div style={S.wrap}>
 
-        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20}}>
           <div style={{background:"#000",color:"#fff",padding:"7px 16px",borderRadius:6,fontWeight:800,fontSize:20}}>KAI DECO</div>
           <div style={{color:"#aaa",fontSize:13}}>Generador de etiquetas · 80×100mm</div>
         </div>
 
-        {/* ── Configuración de conexión ── */}
-        <div style={{...S.card,padding:16,marginBottom:12}}>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <div>
-              <label style={S.label}>API URL</label>
-              <input style={S.input} value={apiUrl} onChange={e=>setApiUrl(e.target.value)}/>
-            </div>
-            <div>
-              <label style={S.label}>API Key</label>
-              <input style={S.input} type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="••••••••"/>
-            </div>
-          </div>
-        </div>
-
         <div style={S.tabs}>
-          <button style={S.tab(tab==="pdf")}    onClick={()=>{setTab("pdf");setPreview(null);setErr(null);setPrintStatus(null);}}>📄 Desde PDF</button>
-          <button style={S.tab(tab==="manual")} onClick={()=>{setTab("manual");setPreview(null);setErr(null);setPrintStatus(null);}}>✏️ Manual</button>
+          <button style={S.tab(tab==="pdf")}    onClick={()=>{setTab("pdf");setPreview(null);setErr(null);}}>📄 Desde PDF</button>
+          <button style={S.tab(tab==="manual")} onClick={()=>{setTab("manual");setPreview(null);setErr(null);}}>✏️ Manual</button>
         </div>
 
         {/* ── TAB PDF ── */}
@@ -493,7 +454,7 @@ function App() {
                   <div style={{fontSize:12,color:"#888",display:"flex",alignItems:"center",gap:6}}>
                     <span>📄</span>
                     <span style={{maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{file.name}</span>
-                    <button onClick={()=>{setFile(null);setPreview(null);setErr(null);setParsed(null);setDetectedAs("");setPrintStatus(null);}}
+                    <button onClick={()=>{setFile(null);setPreview(null);setErr(null);setParsed(null);setDetectedAs("");}}
                       style={{background:"#f0f0f0",border:"none",color:"#888",fontSize:11,padding:"2px 8px",borderRadius:4,cursor:"pointer"}}>
                       cambiar
                     </button>
@@ -510,6 +471,7 @@ function App() {
                   </div>
                 </div>
 
+                {/* Badge detección */}
                 <div style={{marginBottom:14,padding:"7px 12px",borderRadius:6,
                   background:detecting?"#f5f5f5":"#f0fff0",
                   border:`1px solid ${detecting?"#eee":"#c8e6c9"}`,
@@ -580,14 +542,11 @@ function App() {
 
                 {preview&&!busy&&!detecting&&(
                   <div style={{marginTop:18,paddingTop:18,borderTop:"1px solid #f5f5f5"}}>
-                    <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-                      <a href={preview} download={`etiqueta_${pdfType}_${Date.now()}.png`}
-                        style={{display:"inline-flex",alignItems:"center",gap:8,padding:"11px 22px",borderRadius:8,background:acc,color:dot,fontWeight:700,fontSize:14,textDecoration:"none"}}>
-                        ⬇ Descargar PNG
-                      </a>
-                      <span style={{fontSize:11,color:"#ccc"}}>638×799px · 80×100mm · 203dpi</span>
-                    </div>
-                    <PrintBar/>
+                    <a href={preview} download={`etiqueta_${pdfType}_${Date.now()}.png`}
+                      style={{display:"inline-flex",alignItems:"center",gap:8,padding:"11px 22px",borderRadius:8,background:acc,color:dot,fontWeight:700,fontSize:14,textDecoration:"none"}}>
+                      ⬇ Descargar PNG
+                    </a>
+                    <span style={{marginLeft:12,fontSize:11,color:"#ccc"}}>638×799px · 80×100mm · 203dpi</span>
                   </div>
                 )}
               </>
@@ -623,7 +582,7 @@ function App() {
                   background:form.name.trim()?"#111":"#ddd",color:form.name.trim()?"#fff":"#aaa",fontWeight:700,fontSize:15,transition:"all .15s"}}>
                 Generar etiqueta
               </button>
-              <button onClick={()=>{setForm({name:"",address:"",city:"",country:"Uruguay",phone:"",notes:""});setPreview(null);setPrintStatus(null);}}
+              <button onClick={()=>{setForm({name:"",address:"",city:"",country:"Uruguay",phone:"",notes:""});setPreview(null);}}
                 style={{width:"100%",marginTop:8,padding:"8px",borderRadius:8,border:"1px solid #eee",background:"transparent",color:"#ccc",fontSize:12,cursor:"pointer"}}>
                 Limpiar
               </button>
@@ -650,7 +609,6 @@ function App() {
                     ⬇ Descargar PNG
                   </a>
                   <div style={{fontSize:10,color:"#ccc",textAlign:"center",marginTop:5}}>638×799px · PNG · 203dpi · 80×100mm</div>
-                  <PrintBar/>
                 </div>
               )}
             </div>
