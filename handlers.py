@@ -223,6 +223,65 @@ class PrintHandler(BaseHTTPRequestHandler):
     def _post_print(self, params):
         content_type = self.headers.get("Content-Type", "").lower()
 
+        # ── JSON con URL para Otimify ──────────────────────────────────────────
+        if "application/json" in content_type:
+            body, err = self._read_body()
+            if err:
+                return
+            try:
+                import json as _json
+                data = _json.loads(body)
+            except Exception as e:
+                self._send_json(400, {"ok": False, "error": "invalid_json", "detail": str(e)})
+                return
+            raw_url = data.get("url", "")
+            if isinstance(raw_url, list):
+                raw_url = raw_url[0] if raw_url else ""
+            url = str(raw_url).strip()
+            # Si llega como string con múltiples URLs separadas por coma, tomar la primera
+            if "," in url:
+                url = url.split(",")[0].strip()
+            if not url:
+                self._send_json(400, {"ok": False, "error": "url_required"})
+                return
+            try:
+                import urllib.request as _ur
+                req = _ur.Request(url, headers={"User-Agent": "PrintServer/1.0"})
+                with _ur.urlopen(req, timeout=30) as resp:
+                    pdf_bytes = resp.read()
+            except Exception as e:
+                self._send_json(500, {"ok": False, "error": "download_failed", "detail": str(e)})
+                return
+            filename = url.split("/")[-1].split("?")[0]
+            label_type = detect_type(pdf_bytes, filename)
+            import tempfile, shutil, subprocess, os
+            temp_dir = tempfile.mkdtemp(prefix="printapi_")
+            try:
+                img = pdf_to_label_image(pdf_bytes, label_type)
+                img = img.rotate(180, expand=True)
+                print_path = os.path.join(temp_dir, "label.png")
+                img.save(print_path)
+                cmd = ["lp", "-d", PRINTER_NAME, "-o", f"media={LABEL_MEDIA}",
+                       "-o", "orientation-requested=3",
+                       "-o", f"printer-resolution={PRINTER_DPI}dpi",
+                       "-o", "scaling=100", print_path]
+                result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                if result.returncode != 0:
+                    self._send_json(500, {"ok": False, "error": "print_failed",
+                                          "stdout": result.stdout.strip(), "stderr": result.stderr.strip()})
+                    return
+                self._send_json(200, {"ok": True, "message": "print_submitted",
+                                      "source": "url", "detected_label_type": label_type,
+                                      "lp_output": result.stdout.strip()})
+            except Exception as e:
+                self._send_json(500, {"ok": False, "error": "server_error", "detail": str(e)})
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            return
+        # ── FIN bloque JSON/URL ────────────────────────────────────────────────
+
+        content_type = self.headers.get("Content-Type", "").lower()
+
         allowed_types = {
             "application/pdf": ".pdf",
             "image/jpeg":      ".jpg",
