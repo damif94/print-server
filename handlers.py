@@ -254,7 +254,7 @@ class PrintHandler(BaseHTTPRequestHandler):
                 return
             filename = url.split("/")[-1].split("?")[0]
             label_type = detect_type(pdf_bytes, filename)
-            import tempfile, shutil, subprocess, os
+
             temp_dir = tempfile.mkdtemp(prefix="printapi_")
             try:
                 img = pdf_to_label_image(pdf_bytes, label_type)
