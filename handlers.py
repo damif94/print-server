@@ -109,6 +109,14 @@ class PrintHandler(BaseHTTPRequestHandler):
         self.start_time = time.time()
         parsed = urlparse(self.path)
 
+        if parsed.path == "/manual":
+            manual_path = os.path.join(os.path.dirname(__file__), "manual.html")
+            if os.path.exists(manual_path):
+                self._send_file(manual_path)
+            else:
+                self._send_json(404, {"ok": False, "error": "manual_not_found"})
+            return
+
         if parsed.path in ("/", "/index.html"):
             if not os.path.exists(INDEX_FILE):
                 self._send_json(500, {"ok": False, "error": "missing_index_html"})
